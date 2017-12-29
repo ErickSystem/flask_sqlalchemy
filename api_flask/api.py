@@ -60,7 +60,7 @@ def token_required(f):
             current_user = connection.query(Users).filter_by(public_id=data['public_id']).first()
         except:
             return jsonify({'mensagem' : 'Token é inválido ou expirou!'}), 401
-    
+        #trocar: create_user por current_user
         return f(create_user, *args, **kwargs)
 
     return decorated
