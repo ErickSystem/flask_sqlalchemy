@@ -6,9 +6,11 @@ from sqlalchemy import Column, Integer, String
 from connect import Connection
 import uuid
 import jwt
+import json
 import datetime
 from werkzeug.security import generate_password_hash, check_password_hash
 from functools import wraps
+import sys
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'thisissecret'
@@ -37,8 +39,7 @@ class Conteudo(Base):
     complete = Column(BOOLEAN) 
     user_id = Column(Integer)
 
-    def __init__(self, id, texto, complete, user_id):
-        self.id = id
+    def __init__(self, texto, complete, user_id):
         self.texto = texto
         self.complete = complete
         self.user_id = user_id
@@ -61,7 +62,7 @@ def token_required(f):
         except:
             return jsonify({'mensagem' : 'Token é inválido ou expirou!'}), 401
     
-        return f(create_user, *args, **kwargs)
+        return f(current_user, *args, **kwargs)
 
     return decorated
                                                                                            
@@ -69,94 +70,181 @@ def token_required(f):
 @token_required
 def get_all_users(current_user):
 
-    #if current_user.admin == False:
-       # return jsonify({'mensagem' : 'Você não tem permissão para acessar essa função'})
+    try:
+        all_users = connection.query(Users).all()
+        output = []
 
-    all_users = connection.query(Users).all()
-    output = []
+        for user in all_users:
+            user_data = {}
+            user_data['public_id'] = user.public_id
+            user_data['name'] = user.name
+            user_data['password'] = user.password
+            user_data['admin'] = user.admin
+            output.append(user_data)
 
-    for user in all_users:
+        return jsonify({'users' : output})
+
+    except Exception as e:
+        print(e, file=sys.stderr)
+        body = {
+            'sucesso': False,
+            'mensagem': 'não foi possível realizar a consulta no banco de dados'
+        }
+        return jsonify(body), 401
+
+@app.route('/user/<public_id>', methods=['GET'])
+@token_required
+def get_on_user(current_user,public_id):
+    
+    try:
+        user = connection.query(Users).filter_by(public_id=public_id).first()
+
+        if not user:
+            return jsonify({'mensagem' : 'Usuário não encontrado!'})
+
         user_data = {}
         user_data['public_id'] = user.public_id
         user_data['name'] = user.name
         user_data['password'] = user.password
         user_data['admin'] = user.admin
-        output.append(user_data)
 
-    return jsonify({'users' : output})
-
-@app.route('/user/<public_id>', methods=['GET'])
-@token_required
-def get_on_user(current_user,public_id):
-    user = connection.query(Users).filter_by(public_id=public_id).first()
-
-    if not user:
-        return jsonify({'mensagem' : 'Usuário não encontrado!'})
-
-    user_data = {}
-    user_data['public_id'] = user.public_id
-    user_data['name'] = user.name
-    user_data['password'] = user.password
-    user_data['admin'] = user.admin
-
-    return jsonify({'user' : user_data})
+        return jsonify({'user' : user_data})
+    except Exception as e:
+        print(e, file=sys.stderr)
+        body = {
+            'sucesso': False,
+            'mensagem': 'não foi possível realizar a consulta no banco de dados'
+        }
+        return jsonify(body), 401
 
 @app.route('/user', methods=['POST'])
 @token_required
 def create_user(current_user):
-    data = request.get_json()
+    '''
+    Json esperado:
+    { 
+        "name" : "name",
+        "password" : "password"
+    }'''
+
+    try:
+        data = request.get_json()
+    except json.JSONDecodeError:
+        body = {
+            'sucesso': False,
+            'mensagem': 'json inválido'
+        }
+        return jsonify(body), 400
+
+    if current_user.admin == False:
+        body = {
+            'sucesso': False,
+            'mensagem': 'você não tem permissão para criar usuário'
+        }
+        return jsonify(body), 401
 
     hashed_password = generate_password_hash(data['password'], method='sha256')
 
-    #cria o public_id utilizando ramdon e o password criptografado com hash
+    #cria o public_id utilizando random e o password criptografado com hash
     new_user = Users(public_id=str(uuid.uuid4()), name=data['name'], password=hashed_password, admin=False)
     connection.add(new_user)
     connection.commit()
 
-    return jsonify({'mensagem' : 'Novo usuário criado!'})
+    body = {
+            'sucesso': True,
+            'mensagem': 'usuário criado com sucesso!'
+        }
+
+    return jsonify(body), 200
 
 @app.route('/user/<public_id>', methods=['PUT'])
 @token_required
 def promote_user(current_user,public_id):
     user = connection.query(Users).filter_by(public_id=public_id).first()
 
+    if current_user.admin == False:
+        body = {
+            'sucesso': False,
+            'mensagem': 'você não pode dar permissão admin para outro usuário'
+        }
+        return jsonify(body), 401
+
     if not user:
-        return jsonify({'mensagem' : 'Usuário não encontrado!'})
-    
+        body = {
+            'sucesso': False,
+            'mensagem': 'usuário não encontrado'
+        }
+        return jsonify(body), 400
+
     user.admin = True
     connection.commit()
 
-    return jsonify({'mensagem' : 'Usuário foi promovido para Admin!'})
+    body = {
+            'sucesso': True,
+            'mensagem': 'promovido para admin com sucesso'
+        }
+    return jsonify(body), 200
 
 @app.route('/user/<public_id>', methods=['DELETE'])
 @token_required
 def delete_user(current_user,public_id):
     user = connection.query(Users).filter_by(public_id=public_id).first()
 
+    if current_user.admin == False:
+        body = {
+            'sucesso': False,
+            'mensagem': 'você não têm permissão para excluir usuário'
+        }
+        return jsonify(body), 401
+
     if not user:
-       return jsonify({'mensagem' : 'Usuário não encontrado!'})
+        body = {
+            'sucesso': False,
+            'mensagem': 'usuário não encontrado'
+        }
+        return jsonify(body), 400
 
     connection.delete(user)
     connection.commit()
 
-    return jsonify({'mensagem' : 'Usuário foi deletado com sucesso!'})
+    body = {
+            'sucesso': True,
+            'mensagem': 'usuário deletado com sucesso!'
+        }
 
-@app.route('/login')
+    return jsonify(body), 200
+
+@app.route('/authorization', methods=['POST'])
 def login():
-    auth = request.authorization
+    '''Json esperado:
+    { 
+        "name" : "name",
+        "password" : "password"
+    }'''
+    
+    try:
+        auth = request.get_json()
+    except json.JSONDecodeError:
+        body = {
+            'sucesso': False,
+            'mensagem': 'json inválido'
+        }
+        return jsonify(body), 400
+    username = auth['username']
+    password = auth['password']
 
-    if not auth or not auth.username or not auth.password:
-        return make_response('Não pode verificar', 401, {'WWW-Authenticate' : 'Basic realm="Login requerido!"'})
+    if not username or not password:
+        return make_response('user ou senha inválidos', 401, {'WWW-Authenticate' : 'Basic realm="Login requerido!"'})
 
-    user = connection.query(Users).filter_by(name=auth.username).first()
+    user = connection.query(Users).filter_by(name=username).first()
     if not user:
-        return make_response('Não pode verificar', 401, {'WWW-Authenticate' : 'Basic realm="Login requerido!"'})
-    if check_password_hash(user.password, auth.password):
+        return make_response('user ou senha inválidos', 401, {'WWW-Authenticate' : 'Basic realm="Login requerido!"'})
+    if check_password_hash(user.password,password):
         token = jwt.encode({'public_id' : user.public_id, 'exp' : datetime.datetime.utcnow() + datetime.timedelta(minutes=30)}, app.config['SECRET_KEY'])
 
         return jsonify({'token' : token.decode('UTF-8')})
 
-    return make_response('Não pode verificar', 401, {'WWW-Authenticate' : 'Basic realm="Login requerido!"'})
+    return make_response('user ou senha inválidos', 401, {'WWW-Authenticate' : 'Basic realm="Login requerido!"'})
 
 @app.route('/conteudo', methods=['GET'])
 @token_required
@@ -181,7 +269,11 @@ def get_one_conteudo(current_user,id):
     conteudo = connection.query(Conteudo).filter_by(id=id).first()
 
     if not conteudo:
-        return jsonify({'mensagem' : 'Conteudo não encontrado!'})
+        body = {
+            'sucesso': False,
+            'mensagem': 'conteúdo não encontrado'
+        }
+        return jsonify(body), 401
 
     conteudo_data = {}
     conteudo_data['id'] = conteudo.id
@@ -194,39 +286,98 @@ def get_one_conteudo(current_user,id):
 @app.route('/conteudo', methods=['POST'])
 @token_required
 def create_conteudo(current_user):
-    data = request.get_json()
 
-    new_conteudo = Conteudo(texto=data['texto'], complete=False, user_id=data['user_id'])
+    '''
+    Json esperado:
+    {
+        "texto" : "texto"
+    }'''
+    user_id = current_user.id
+    if current_user.admin == False:
+        body = {
+            'sucesso': False,
+            'mensagem': 'você não têm permissão para criar conteúdo'
+        }
+        return jsonify(body), 401
+
+    try:
+        data = request.get_json()
+    except json.JSONDecodeError:
+        body = {
+            'sucesso': False,
+            'mensagem': 'json inválido'
+        }
+        return jsonify(body), 400
+
+    new_conteudo = Conteudo(texto=data['texto'], complete=False, user_id=user_id)
     connection.add(new_conteudo)
     connection.commit()
 
-    return jsonify({'mensagem' : 'Conteudo criado!'})
+    body = {
+            'sucesso': True,
+            'mensagem': 'conteudo criado com sucesso!'
+        }
+
+    return jsonify(body), 200
 
 @app.route('/conteudo/<id>', methods=['PUT'])
 @token_required
-def complete_conteudo(create_user,id):
+def complete_conteudo(current_user,id):
     conteudo = connection.query(Conteudo).filter_by(id=id).first()
 
+    if current_user.admin == False:
+        body = {
+            'sucesso': False,
+            'mensagem': 'você não têm permissão para completar o conteúdo'
+        }
+        return jsonify(body), 401
+
     if not conteudo:
-        return jsonify({'mensagem' : 'Conteudo não encontrado!'})
+        body = {
+            'sucesso': False,
+            'mensagem': 'conteudo não encontrado'
+        }
+        return jsonify(body), 400
     
     conteudo.complete = True
     connection.commit()
 
-    return jsonify({'mensagem' : 'Complete atualizado!'})
+    body = {
+            'sucesso': True,
+            'mensagem': 'conteudo completado com sucesso!'
+        }
+
+    return jsonify(body), 200
 
 @app.route('/conteudo/<id>', methods=['DELETE'])
 @token_required
-def delete_conteudo(create_user,id):
+def delete_conteudo(current_user,id):
     conteudo = connection.query(Conteudo).filter_by(id=id).first()
 
+    if current_user.admin == False:
+        body = {
+            'sucesso': False,
+            'mensagem': 'você não têm permissão para excluir conteúdo'
+        }
+        return jsonify(body), 401
+
     if not conteudo:
-        return jsonify({'mensagem' : 'Conteudo não encontrado!'})
+        body = {
+            'sucesso': False,
+            'mensagem': 'conteudo não encontrado'
+        }
+        return jsonify(body), 400
 
     connection.delete(conteudo)
     connection.commit()
 
-    return jsonify({'mensagem' : 'Conteudo excluído com sucesso!'})
+    body = {
+            'sucesso': True,
+            'mensagem': 'conteudo excluído com sucesso!'
+        }
+    return jsonify(body)
 
 if __name__ == '__main__':
+    #http://127.0.0.1:5000/
     app.run(debug=True, port=5000)
+
